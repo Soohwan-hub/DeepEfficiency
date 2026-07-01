@@ -1,0 +1,6 @@
+data/graphs
+results
+data/__pycache__
+architecture/__pycache__
+architecture/DeepEfficiency Architecture.png
+.venv
