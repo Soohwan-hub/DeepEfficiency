@@ -33,12 +33,20 @@ class EnzymeEfficiencyFFNN(nn.Module):
     def forward(self, x):
         return self.network(x)
 
-def train_FFNN(train, val, epochs=100, batch_size=64, lr=.001):
+def train_FFNN(
+    train,
+    val,
+    enzyme_model_name,
+    substrate_model_name,
+    epochs=100,
+    batch_size=64,
+    lr=.001
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    X_train = embedding.concat_encoder(train)
+    X_train = embedding.concat_encoder(train, enzyme_model_name, substrate_model_name)
     y_train = train["Log10_value"].to_numpy(dtype=float)
-    X_val = embedding.concat_encoder(val)
+    X_val = embedding.concat_encoder(val, enzyme_model_name, substrate_model_name)
     y_val = val["Log10_value"].to_numpy(dtype=float)
 
     scaler = StandardScaler()
@@ -109,12 +117,12 @@ def train_FFNN(train, val, epochs=100, batch_size=64, lr=.001):
     model.load_state_dict(best_model_weights)
     return model, scaler
 
-def get_final_val_loss(model, val_data, scaler, batch_size=64):
+def get_final_val_loss(model, val_data, scaler, enzyme_model_name, substrate_model_name, batch_size=64):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
 
-    X_val = embedding.concat_encoder(val_data)
+    X_val = embedding.concat_encoder(val_data, enzyme_model_name, substrate_model_name)
     y_val = val_data["Log10_value"].to_numpy(dtype=float)
 
     X_val_scaled = scaler.transform(X_val)
@@ -137,8 +145,20 @@ def get_final_val_loss(model, val_data, scaler, batch_size=64):
 
     return total_loss / len(val_loader.dataset)
 
-def tune_train_FFNN(train_data, val_data):
+def tune_train_FFNN(train_data, val_data, enzyme_model_name="ESM 2 650M", substrate_model_name="ChemBERTa-MTR"):
     params = {"batch_size": 64, "lr": 0.001, "epochs": 100}
-    model, scaler = train_FFNN(train_data, val_data, **params)
-    val_loss = get_final_val_loss(model, val_data, scaler)
+    model, scaler = train_FFNN(
+        train_data,
+        val_data,
+        enzyme_model_name,
+        substrate_model_name,
+        **params
+    )
+    val_loss = get_final_val_loss(
+        model,
+        val_data,
+        scaler,
+        enzyme_model_name,
+        substrate_model_name
+    )
     return model, [val_loss], params, scaler

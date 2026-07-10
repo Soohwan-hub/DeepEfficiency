@@ -4,3 +4,4 @@ data/__pycache__
 architecture/__pycache__
 architecture/DeepEfficiency Architecture.png
 .venv
+data/results_analysis.py
