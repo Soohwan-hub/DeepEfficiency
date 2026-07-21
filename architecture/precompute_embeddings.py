@@ -23,9 +23,11 @@ def load_splits(split_dir):
     return train_df, val_df, test_df
 
 
-def build_xy(df, enzyme_batch_size, substrate_batch_size):
+def build_xy(df, enzyme_model_name, substrate_model_name, enzyme_batch_size, substrate_batch_size):
     X = embedding.concat_encoder(
         df,
+        enzyme_model_name,
+        substrate_model_name,
         enzyme_batch_size=enzyme_batch_size,
         substrate_batch_size=substrate_batch_size
     ).astype(np.float32)
@@ -57,21 +59,37 @@ def main():
         default=64,
         help="Batch size used for substrate encoder."
     )
+    parser.add_argument(
+        "--enzyme-model",
+        type=str,
+        default="ESM 2 650M",
+        help="enzyme embedding pretrained language model name"
+    )
+    parser.add_argument(
+        "--substrate-model",
+        type=str,
+        default="ChemBERTa-MTR",
+        help="Substrate embedding model name"
+    )
     args = parser.parse_args()
 
     train_df, val_df, test_df = load_splits(args.split_dir)
 
-    X_train, y_train = build_xy(train_df, args.enzyme_batch_size, args.substrate_batch_size)
-    X_val, y_val = build_xy(val_df, args.enzyme_batch_size, args.substrate_batch_size)
-    X_test, y_test = build_xy(test_df, args.enzyme_batch_size, args.substrate_batch_size)
+    X_train, y_train = build_xy(train_df, args.enzyme_model, args.substrate_model, args.enzyme_batch_size, args.substrate_batch_size)
+    X_val, y_val = build_xy(val_df, args.enzyme_model, args.substrate_model, args.enzyme_batch_size, args.substrate_batch_size)
+    X_test, y_test = build_xy(test_df, args.enzyme_model, args.substrate_model, args.enzyme_batch_size, args.substrate_batch_size)
 
     output_path = args.output
     if output_path is None:
         output_dir = os.path.join(args.split_dir, "feature_cache")
         os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, "features.npz")
+        enzyme_tag = args.enzyme_model.replace(" ", "_").replace("/", "-")
+        substrate_tag = args.substrate_model.replace(" ", "_").replace("/", "-")
+        output_path = os.path.join(output_dir, f"{enzyme_tag}_{substrate_tag}.npz")
     else:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        output_dirname = os.path.dirname(output_path)
+        if output_dirname:
+            os.makedirs(output_dirname, exist_ok=True)
 
     np.savez_compressed(
         output_path,

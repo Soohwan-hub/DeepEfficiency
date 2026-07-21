@@ -1,6 +1,5 @@
 import json
 import argparse
-import torch
 import joblib
 import datetime
 import os
@@ -8,8 +7,6 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import data.utils as utils
-import data.embedding as embedding
-import architecture.FFNN as ffnn_m
 
 from scipy.stats import pearsonr
 #from sklearn.linear_model import Ridge as CPU_Ridge
@@ -23,7 +20,25 @@ from sklearn.model_selection import ParameterSampler
 import xgboost as xgb
 
 
-def tune_train_XGBoost_from_encoded_folds(encoded_folds):
+def _get_embedding_module():
+    import data.embedding as embedding_module
+    return embedding_module
+
+
+def _get_ffnn_module():
+    import architecture.FFNN as ffnn_module
+    return ffnn_module
+
+
+def _is_torch_module(obj):
+    try:
+        import torch
+    except ImportError:
+        return False
+    return isinstance(obj, torch.nn.Module)
+
+
+def tune_train_XGBoost_from_encoded_folds(encoded_folds, xgb_device="cuda"):
     param_grid = {
         'max_depth': [4, 6, 8, 10, 12],
         'learning_rate': [0.01, 0.03, 0.05, 0.1],
@@ -54,7 +69,7 @@ def tune_train_XGBoost_from_encoded_folds(encoded_folds):
                 **params,
                 n_estimators=2000,
                 tree_method="hist",
-                device="cuda",
+                device=xgb_device,
                 random_state=42,
                 early_stopping_rounds=50
             )
@@ -88,33 +103,40 @@ def tune_train_XGBoost_from_encoded_folds(encoded_folds):
         **best_overall_params,
         n_estimators=best_overall_trees,
         tree_method="hist",
-        device="cuda",
+        device=xgb_device,
         random_state=42
     )
     master_model.fit(X_master_train, y_master_train)
     return master_model, best_fold_mses, best_overall_params
 
 
-def tune_train_XGBoost(data_folds):
+def tune_train_XGBoost(
+    data_folds,
+    enzyme_model_name="ESM 2 650M",
+    substrate_model_name="ChemBERTa-MTR",
+    xgb_device="cuda"
+):
+    embedding = _get_embedding_module()
     encoded_folds = []
     for _, fold in enumerate(data_folds):
-        X = embedding.concat_encoder(fold).astype(np.float32)
+        X = embedding.concat_encoder(fold, enzyme_model_name, substrate_model_name).astype(np.float32)
         y = fold["Log10_value"].to_numpy(dtype=np.float32)
         encoded_folds.append((X, y))
-    return tune_train_XGBoost_from_encoded_folds(encoded_folds)
+    return tune_train_XGBoost_from_encoded_folds(encoded_folds, xgb_device=xgb_device)
 
 
-def tune_train_XGBoost_cached(X_trainval, y_trainval, n_folds=5):
+def tune_train_XGBoost_cached(X_trainval, y_trainval, n_folds=5, xgb_device="cuda"):
     indices = np.arange(len(X_trainval))
     fold_indices = np.array_split(indices, n_folds)
     encoded_folds = []
     for fold_idx in fold_indices:
         encoded_folds.append((X_trainval[fold_idx], y_trainval[fold_idx]))
-    return tune_train_XGBoost_from_encoded_folds(encoded_folds)
+    return tune_train_XGBoost_from_encoded_folds(encoded_folds, xgb_device=xgb_device)
 
 
-def tune_train_ExtraTrees(train_data):
-    X_train = embedding.concat_encoder(train_data)
+def tune_train_ExtraTrees(train_data, enzyme_model_name="ESM 2 650M", substrate_model_name="ChemBERTa-MTR"):
+    embedding = _get_embedding_module()
+    X_train = embedding.concat_encoder(train_data, enzyme_model_name, substrate_model_name)
     y_train = train_data["Log10_value"].to_numpy(dtype=float)
     
     param_dist = {
@@ -151,32 +173,9 @@ def tune_train_ExtraTrees(train_data):
     return search.best_estimator_, fold_mses, search.best_params_
 
 
-    # models = []
-    # for i in range(len(data_folds)):
-    #     model = ExtraTreesRegressor(
-    #         n_estimators=500,
-    #         max_depth=15,
-    #         max_features='sqrt',
-    #         n_jobs=-1,
-    #         random_state=42
-    #     )
-    #     train = pd.concat([f for j, f in enumerate(data_folds) if j != i], ignore_index=True)
-    #     test = data_folds[i]
-    #     X_train = embedding.concat_encoder(train)
-    #     y_train = train["Log10_value"].to_numpy(dtype=float)
-    #     X_test = embedding.concat_encoder(test)
-    #     y_test = test["Log10_value"].to_numpy(dtype=float)
-    #     model.fit(X_train, y_train)
-
-    #     pred = model.predict(X_test)
-    #     mse = mean_squared_error(y_test, pred)
-    #     r2 = r2_score(y_test, pred)
-    #     models.append((model, mse, r2))
-    # return models
-
-
-def tune_train_RandomForest(train_data):
-    X_train = embedding.concat_encoder(train_data).astype(np.float32)
+def tune_train_RandomForest(train_data, enzyme_model_name="ESM 2 650M", substrate_model_name="ChemBERTa-MTR"):
+    embedding = _get_embedding_module()
+    X_train = embedding.concat_encoder(train_data, enzyme_model_name, substrate_model_name).astype(np.float32)
     y_train = train_data["Log10_value"].to_numpy(dtype=np.float32)
 
     param_dist = {
@@ -213,36 +212,10 @@ def tune_train_RandomForest(train_data):
     
     return search.best_estimator_, fold_mses, search.best_params_
 
-# def train_RandomForest(data_folds):
-#     models = []
-#     for i in range(len(data_folds)):
-#         model = RandomForestRegressor(
-#             n_estimators=500,
-#             max_depth=15,
-#             max_features='sqrt',
-#             n_jobs=-1,
-#             random_state=42
-#         )
 
-#         train = pd.concat([f for j, f in enumerate(data_folds) if j != i], ignore_index=True)
-#         test = data_folds[i]
-#         X_train = embedding.concat_encoder(train)
-#         y_train = train["Log10_value"].to_numpy(dtype=float)
-#         X_test = embedding.concat_encoder(test)
-#         y_test = test["Log10_value"].to_numpy(dtype=float)
-
-#         model.fit(X_train, y_train)
-#         pred = model.predict(X_test)
-#         mse = mean_squared_error(y_test, pred)
-#         r2 = r2_score(y_test, pred)
-#         models.append((model, mse, r2))
-
-#     return models
-
-
-
-def tune_train_Ridge(train_data):
-    X_train = embedding.concat_encoder(train_data).astype(np.float32)
+def tune_train_Ridge(train_data, enzyme_model_name="ESM 2 650M", substrate_model_name="ChemBERTa-MTR"):
+    embedding = _get_embedding_module()
+    X_train = embedding.concat_encoder(train_data, enzyme_model_name, substrate_model_name).astype(np.float32)
     y_train = train_data["Log10_value"].to_numpy(dtype=np.float32)
 
     param_dist = {
@@ -355,32 +328,22 @@ def tune_train_Ridge_cached(X_train, y_train):
     ]
     return search.best_estimator_, fold_mses, search.best_params_
 
-# def train_Ridge(data_folds):
-#     models = []
-#     for i in range(len(data_folds)):
-#         model = Ridge(alpha=1.0, random_state=42)
-
-#         train = pd.concat([f for j, f in enumerate(data_folds) if j != i], ignore_index=True)
-#         test = data_folds[i]
-#         X_train = embedding.concat_encoder(train)
-#         y_train = train["Log10_value"].to_numpy(dtype=float)
-#         X_test = embedding.concat_encoder(test)
-#         y_test = test["Log10_value"].to_numpy(dtype=float)
-
-#         model.fit(X_train, y_train)
-#         pred = model.predict(X_test)
-#         mse = mean_squared_error(y_test, pred)
-#         r2 = r2_score(y_test, pred)
-#         models.append((model, mse, r2))
-
-#     return models
-
-def evaluate_model(frozen_model, test_set=None, scaler=None, X_test=None, y_test=None):
+def evaluate_model(
+    frozen_model,
+    test_set=None,
+    scaler=None,
+    X_test=None,
+    y_test=None,
+    enzyme_model_name="ESM 2 650M",
+    substrate_model_name="ChemBERTa-MTR"
+):
     if X_test is None or y_test is None:
-        X_test = embedding.concat_encoder(test_set)
+        embedding = _get_embedding_module()
+        X_test = embedding.concat_encoder(test_set, enzyme_model_name, substrate_model_name)
         y_test = test_set["Log10_value"].to_numpy(dtype=float)
 
-    if isinstance(frozen_model, torch.nn.Module):
+    if _is_torch_module(frozen_model):
+        import torch
         frozen_model.eval()
         X_test_scaled = scaler.transform(X_test) if scaler else X_test
         X_test_T = torch.tensor(X_test_scaled, dtype=torch.float32).to(next(frozen_model.parameters()).device)
@@ -398,18 +361,54 @@ def evaluate_model(frozen_model, test_set=None, scaler=None, X_test=None, y_test
     print(f"  -> Pearson r: {pearson_corr:.4f}\n")
     return mse, r2, pearson_corr, pred, y_test
 
-def build_pipelines(train, val, df_folds, selected_models=None, feature_cache_data=None):
+def build_pipelines(
+    train,
+    val,
+    df_folds,
+    selected_models=None,
+    feature_cache_data=None,
+    enzyme_model_name="ESM 2 650M",
+    substrate_model_name="ChemBERTa-MTR",
+    xgb_device="cuda"
+):
     """
     Build model pipeline list, optionally filtered by model names.
     """
     train_ = pd.concat([train, val], ignore_index=True)
     if feature_cache_data is None:
         all_pipelines = [
-            ("XGBoost", tune_train_XGBoost, df_folds),
-            ("ExtraTrees", tune_train_ExtraTrees, train_),
-            ("RandomForest", tune_train_RandomForest, train_),
-            ("Ridge", tune_train_Ridge, train_),
-            ("FFNN", ffnn_m.tune_train_FFNN, (train, val))
+            (
+                "XGBoost",
+                lambda folds: tune_train_XGBoost(
+                    folds, enzyme_model_name, substrate_model_name, xgb_device=xgb_device
+                ),
+                df_folds
+            ),
+            (
+                "ExtraTrees",
+                lambda train_data: tune_train_ExtraTrees(train_data, enzyme_model_name, substrate_model_name),
+                train_
+            ),
+            (
+                "RandomForest",
+                lambda train_data: tune_train_RandomForest(train_data, enzyme_model_name, substrate_model_name),
+                train_
+            ),
+            (
+                "Ridge",
+                lambda train_data: tune_train_Ridge(train_data, enzyme_model_name, substrate_model_name),
+                train_
+            ),
+            (
+                "FFNN",
+                lambda train_df, val_df: _get_ffnn_module().tune_train_FFNN(
+                    train_df,
+                    val_df,
+                    enzyme_model_name,
+                    substrate_model_name
+                ),
+                (train, val)
+            )
         ]
     else:
         X_train = feature_cache_data["X_train"]
@@ -420,11 +419,24 @@ def build_pipelines(train, val, df_folds, selected_models=None, feature_cache_da
         y_trainval = np.concatenate([y_train, y_val], axis=0)
 
         all_pipelines = [
-            ("XGBoost", tune_train_XGBoost_cached, (X_trainval, y_trainval)),
+            (
+                "XGBoost",
+                lambda X_data, y_data: tune_train_XGBoost_cached(X_data, y_data, xgb_device=xgb_device),
+                (X_trainval, y_trainval)
+            ),
             ("ExtraTrees", tune_train_ExtraTrees_cached, (X_trainval, y_trainval)),
             ("RandomForest", tune_train_RandomForest_cached, (X_trainval, y_trainval)),
             ("Ridge", tune_train_Ridge_cached, (X_trainval, y_trainval)),
-            ("FFNN", ffnn_m.tune_train_FFNN, (train, val))
+            (
+                "FFNN",
+                lambda train_df, val_df: _get_ffnn_module().tune_train_FFNN(
+                    train_df,
+                    val_df,
+                    enzyme_model_name,
+                    substrate_model_name
+                ),
+                (train, val)
+            )
         ]
 
     if not selected_models:
@@ -451,7 +463,10 @@ def main(
     save_splits=True,
     selected_models=None,
     feature_cache_path=None,
-    results_root="results"
+    results_root="results",
+    enzyme_model_name="ESM 2 650M",
+    substrate_model_name="ChemBERTa-MTR",
+    xgb_device="cuda"
 ):
     data_path = "data/data_KCATKM.csv"
     run_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -477,7 +492,10 @@ def main(
         val,
         df_folds,
         selected_models=selected_models,
-        feature_cache_data=feature_cache_data
+        feature_cache_data=feature_cache_data,
+        enzyme_model_name=enzyme_model_name,
+        substrate_model_name=substrate_model_name,
+        xgb_device=xgb_device
     )
     print(f"Running models: {', '.join(name for name, _, _ in pipelines)}")
 
@@ -490,7 +508,13 @@ def main(
 
         if name == "FFNN":
             model, fold_mses, params, scaler = results
-            mse, r2, pearson, pred, y_test = evaluate_model(model, test, scaler=scaler)
+            mse, r2, pearson, pred, y_test = evaluate_model(
+                model,
+                test,
+                scaler=scaler,
+                enzyme_model_name=enzyme_model_name,
+                substrate_model_name=substrate_model_name
+            )
             utils.save_experiment(
                 model,
                 fold_mses,
@@ -500,12 +524,19 @@ def main(
                 y_test,
                 base_path=run_output_dir,
                 extra_artifact=scaler,
-                eval_metrics={"mse": mse, "r2": r2, "pearson": pearson}
+                eval_metrics={"mse": mse, "r2": r2, "pearson": pearson},
+                feature_cache_path=feature_cache_path
             )
         else:
             model, fold_mses, params = results
             if feature_cache_data is None:
-                mse, r2, pearson, pred, y_test = evaluate_model(model, test, scaler=None)
+                mse, r2, pearson, pred, y_test = evaluate_model(
+                    model,
+                    test,
+                    scaler=None,
+                    enzyme_model_name=enzyme_model_name,
+                    substrate_model_name=substrate_model_name
+                )
             else:
                 mse, r2, pearson, pred, y_test = evaluate_model(
                     model,
@@ -522,7 +553,8 @@ def main(
                 y_test,
                 base_path=run_output_dir,
                 extra_artifact=None,
-                eval_metrics={"mse": mse, "r2": r2, "pearson": pearson}
+                eval_metrics={"mse": mse, "r2": r2, "pearson": pearson},
+                feature_cache_path=feature_cache_path
             )
         
         
@@ -569,11 +601,33 @@ if __name__ == "__main__":
         default="results",
         help="Root directory where a timestamped run folder will be created."
     )
+    parser.add_argument(
+        "--enzyme-model",
+        type=str,
+        default="ESM 2 650M",
+        help="Enzyme embedding model name."
+    )
+    parser.add_argument(
+        "--substrate-model",
+        type=str,
+        default="ChemBERTa-MTR",
+        help="Substrate embedding model name."
+    )
+    parser.add_argument(
+        "--xgb-device",
+        type=str,
+        choices=["cpu", "cuda"],
+        default="cuda",
+        help="Device backend for XGBoost."
+    )
     args = parser.parse_args()
     main(
         split_dir=args.split_dir,
         save_splits=not args.no_save_splits,
         selected_models=args.models,
         feature_cache_path=args.feature_cache,
-        results_root=args.results_root
+        results_root=args.results_root,
+        enzyme_model_name=args.enzyme_model,
+        substrate_model_name=args.substrate_model,
+        xgb_device=args.xgb_device
     )
