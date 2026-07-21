@@ -6,7 +6,9 @@ import json
 import joblib
 import datetime
 import os
-import xgboost as xgb
+
+if TYPE_CHECKING:
+    import xgboost as xgb
 
 
 def _is_torch_module(obj):
@@ -50,10 +52,16 @@ def save_experiment(
     if _is_torch_module(model):
         import torch
         torch.save(model.state_dict(), os.path.join(exp_dir, "model.pth"))
-    elif isinstance(model, xgb.XGBRegressor):
-        model.save_model(os.path.join(exp_dir, "model.json"))
     else:
-        joblib.dump(model, os.path.join(exp_dir, "model.joblib"))
+        try:
+            import xgboost as xgb
+        except ImportError:
+            xgb = None
+
+        if xgb is not None and isinstance(model, xgb.XGBRegressor):
+            model.save_model(os.path.join(exp_dir, "model.json"))
+        else:
+            joblib.dump(model, os.path.join(exp_dir, "model.joblib"))
     
     if extra_artifact is not None:
         joblib.dump(extra_artifact, os.path.join(exp_dir, "scaler.joblib"))
